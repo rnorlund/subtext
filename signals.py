@@ -86,6 +86,27 @@ def _vulnerability_score(text: str) -> int:
     return sum(low.count(p) for p in _VULNERABLE_PHRASES)
 
 
+# Encouragement / compliments — praise and support directed at the other person.
+_ENCOURAGEMENT = [
+    r"proud of you", r"i'?m proud", r"good job", r"great job", r"well done",
+    r"you'?re amazing", r"you'?re the best", r"you can do it", r"you'?ve got this",
+    r"you got this", r"i believe in you", r"so smart", r"so talented",
+    r"you'?re great", r"nailed it", r"impressive", r"you'?re awesome", r"way to go",
+    r"congrats", r"congratulations", r"you'?re doing (great|amazing|so well|so good)",
+    r"keep it up", r"you rock", r"so proud", r"you'?re brilliant", r"you'?re incredible",
+    r"you'?re wonderful", r"\bbeautiful\b", r"\bhandsome\b", r"you'?re killing it",
+    r"i'?m so happy for you", r"you deserve", r"that'?s awesome",
+]
+_ENC_RE = [re.compile(p) for p in _ENCOURAGEMENT]
+
+
+def _encouragement_hits(text: str) -> int:
+    if not text:
+        return 0
+    t = text.lower()
+    return sum(1 for r in _ENC_RE if r.search(t))
+
+
 def _affection_hits(text: str) -> int:
     if not text:
         return 0
@@ -104,6 +125,7 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     df["is_positive"] = df["compound"] >= 0.05
     df["is_negative"] = df["compound"] <= -0.05
     df["affection"] = df["text"].apply(_affection_hits)
+    df["encouragement"] = df["text"].apply(_encouragement_hits)
     df["has_question"] = df["text"].str.contains(r"\?", regex=True, na=False)
     df["hour"] = df["dt"].dt.hour
     df["is_late_night"] = (df["hour"] >= 22) | (df["hour"] < 4)
@@ -169,10 +191,13 @@ def compute_signals(df: pd.DataFrame, freq: str = "W") -> pd.DataFrame:
             "reciprocity": g["is_from_me"].mean(),
             "question_rate": g["has_question"].mean(),
             "affection": g["affection"].mean(),
+            "encouragement": g["encouragement"].mean(),
             "late_night_share": g["is_late_night"].mean(),
             "media_share": g["is_media"].mean(),
             # Extended signals (beyond the core 13):
             "emotional_balance": g["is_emotional"].mean() - g["is_practical"].mean(),
+            "emotional_share": g["is_emotional"].mean(),
+            "practical_share": g["is_practical"].mean(),
             "vulnerability": g["vulnerability"].mean(),
         }
     )
@@ -204,7 +229,7 @@ def compute_signals(df: pd.DataFrame, freq: str = "W") -> pd.DataFrame:
 # Signals that are meaningful *per person* (split into You vs Them lines).
 PER_PERSON_SIGNALS = [
     "volume", "net_sentiment", "pct_positive", "pct_negative", "emoji_rate",
-    "avg_words", "question_rate", "affection", "late_night_share",
+    "avg_words", "question_rate", "affection", "encouragement", "late_night_share",
     "media_share", "vulnerability", "reply_latency_min",
 ]
 # Signals that are inherently relational (a single line for the pair).
@@ -246,6 +271,7 @@ def compute_signals_split(df: pd.DataFrame, freq: str = "W") -> dict:
                 "avg_words": g["n_words"].mean(),
                 "question_rate": g["has_question"].mean(),
                 "affection": g["affection"].mean(),
+                "encouragement": g["encouragement"].mean(),
                 "late_night_share": g["is_late_night"].mean(),
                 "media_share": g["is_media"].mean(),
                 "vulnerability": g["vulnerability"].mean(),
@@ -269,6 +295,8 @@ SIGNAL_META = {
     "reply_latency_min": ("Reply latency (min)", "Median minutes to reply."),
     "question_rate": ("Question rate", "Share of messages asking something."),
     "affection": ("Affection", "Affection-word/emoji hits per message."),
+    "encouragement": ("Encouragement / compliments",
+                      "Praise & support per message — how complimentary each of you is."),
     "late_night_share": ("Late-night share", "Share sent 10pm–4am."),
     "media_share": ("Media share", "Share that are photos/links/attachments."),
     # Extended pair (beyond the core 13):

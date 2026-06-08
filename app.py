@@ -33,7 +33,7 @@ st.set_page_config(page_title="Message Analytics", layout="wide")
 
 @st.cache_data(show_spinner="Loading messages…")
 def get_data(rebuild: bool) -> pd.DataFrame:
-    # Merge aliased identifiers (e.g. Sarah's email + phone) into one person.
+    # Merge aliased identifiers (a person's email + phone) into one person.
     return aliases.apply_aliases(extract.load_cached(rebuild=rebuild))
 
 
@@ -131,17 +131,20 @@ with st.sidebar:
             return c
         return contacts.resolve_name(c) or str(c)
 
-    mode = st.radio("View", ["Single relationship", "All relationships"], index=0)
+    view_opts = ["Single relationship", "All relationships"]
+    if aliases.children():
+        view_opts.append("👨‍👩‍👧 Family (kids)")
+    mode = st.radio("View", view_opts, index=0)
     contact = st.selectbox(
         "Contact",
         counts.index.tolist(),
         format_func=lambda c: f"{disp_name(c)}  ({counts[c]:,} msgs)",
-        disabled=(mode == "All relationships"),
+        disabled=(mode != "Single relationship"),
     )
     freq_label = st.radio("Granularity", ["Daily", "Weekly", "Monthly"], index=1)
     freq = {"Daily": "D", "Weekly": "W", "Monthly": "ME"}[freq_label]
     st.divider()
-    me_name = st.text_input("Your name", value="Roger")
+    me_name = st.text_input("Your name", value=aliases.me_name())
     them_name = st.text_input("Their name", value=disp_name(contact))
 
 # Coverage summary up top.
@@ -206,6 +209,69 @@ if mode == "All relationships":
     st.caption(
         "Sentiment via VADER. 'Days since last' flags relationships going quiet. "
         "Switch to **Single relationship** in the sidebar for deep-dive charts."
+    )
+    st.stop()
+
+# ── Family: do the kids mirror your mood? ─────────────────────────────────
+if mode == "👨‍👩‍👧 Family (kids)":
+    me = aliases.me_name()
+    st.subheader(f"👨‍👩‍👧 Do the kids mirror {me}'s mood?")
+    st.info(
+        "For each child's 1:1 thread, this measures **emotional contagion**: when "
+        f"{me} sends an emotional message, how often the child's next reply carries the "
+        "same emotion — plus a lead–lag correlation of sentiment over time. "
+        "**Correlation, not proof of causation** — kids' moods have countless causes "
+        "beyond texts. A reflection tool, not a verdict."
+    )
+    kids = [k for k in aliases.children() if k in counts.index]
+    if not kids:
+        st.warning("No configured children found in the data.")
+        st.stop()
+
+    rows = []
+    for kid in kids:
+        ksub = df[(df["contact"] == kid) & (~df["is_group"])]
+        wl = dyn.who_leads(ksub, freq="ME")
+        cc = wl.get("crosscorr", {}) if wl else {}
+        peak = max(cc, key=lambda k: cc[k]) if cc else 0
+        rows.append({
+            "kid": kid, "msgs": len(ksub),
+            "neg_mirror": wl.get("neg_me_to_them", 0) if wl else 0,
+            "pos_mirror": wl.get("pos_me_to_them", 0) if wl else 0,
+            "lag": peak, "corr": cc.get(peak, 0) if cc else 0,
+        })
+
+    # Comparison bars: how much each kid mirrors your negativity / positivity.
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name=f"mirrors {me}'s negativity",
+                         x=[r["kid"] for r in rows], y=[100 * r["neg_mirror"] for r in rows],
+                         marker_color="#E74C3C",
+                         text=[f"{100*r['neg_mirror']:.0f}%" for r in rows], textposition="outside"))
+    fig.add_trace(go.Bar(name=f"mirrors {me}'s positivity",
+                         x=[r["kid"] for r in rows], y=[100 * r["pos_mirror"] for r in rows],
+                         marker_color="#2ca02c",
+                         text=[f"{100*r['pos_mirror']:.0f}%" for r in rows], textposition="outside"))
+    fig.update_layout(barmode="group", height=400, yaxis_title="% of replies that mirror your mood",
+                      margin=dict(l=10, r=10, t=40, b=10),
+                      legend=dict(orientation="h", y=1.08, x=0),
+                      title=dict(text="When you send an emotional message, how often each kid echoes it",
+                                 font=dict(size=14)))
+    st.plotly_chart(fig, use_container_width=True)
+
+    cols = st.columns(len(rows))
+    for col, r in zip(cols, rows):
+        most = "negativity" if r["neg_mirror"] >= r["pos_mirror"] else "positivity"
+        lead = (f"your mood tends to **precede** {r['kid']}'s by {abs(r['lag'])} period(s)"
+                if r["lag"] > 0 else
+                f"{r['kid']}'s mood tends to **precede** yours" if r["lag"] < 0 else
+                "moods move **in sync**")
+        col.metric(r["kid"], f"{r['msgs']:,} msgs",
+                   f"echoes your {most} most", delta_color="off")
+        col.caption(f"Lead–lag: {lead} (r={r['corr']:+.2f}).")
+
+    st.caption(
+        "Higher bars = that child's replies more often match the emotion you just sent. "
+        "Use it to notice patterns worth a gentle conversation — not to assign blame."
     )
     st.stop()
 
@@ -362,6 +428,29 @@ def _show_inspector(event, freq, flag=None):
         st.dataframe(view, use_container_width=True, height=320, hide_index=True)
 
 
+def _person_series(fig, me_s, them_s, combined_s=None, scatter=True):
+    """Add traces for me / them / both / combined per the global VIEW_MODE."""
+    def emit(series, name, color):
+        if series is None or len(pd.Series(series).dropna()) == 0:
+            return
+        if scatter:
+            _add_scatter_with_fit(fig, series.index, series.values, name, color)
+        else:
+            fig.add_trace(go.Scatter(x=series.index, y=series.values, mode="lines",
+                                     line=dict(width=2.6, color=color), name=name))
+    if VIEW_MODE == "me":
+        emit(me_s, me_name, COLOR_ME)
+    elif VIEW_MODE == "them":
+        emit(them_s, them_name, COLOR_THEM)
+    elif VIEW_MODE == "combined":
+        if combined_s is None and me_s is not None and them_s is not None:
+            combined_s = me_s.add(them_s, fill_value=0)
+        emit(combined_s if combined_s is not None else me_s, "Combined", "#cfcfe0")
+    else:  # both
+        emit(me_s, me_name, COLOR_ME)
+        emit(them_s, them_name, COLOR_THEM)
+
+
 def render_grid(keys: list[str]) -> None:
     cols = st.columns(2)
     drawn = 0
@@ -371,15 +460,13 @@ def render_grid(keys: list[str]) -> None:
         label, desc = sig.SIGNAL_META[key]
         fig = go.Figure()
         if key in sig.PER_PERSON_SIGNALS and not split["me"].empty:
-            sm, sthem = split["me"], split["them"]
-            if key in sm:
-                _add_scatter_with_fit(fig, sm.index, sm[key], me_name, COLOR_ME)
-            if key in sthem:
-                _add_scatter_with_fit(fig, sthem.index, sthem[key], them_name, COLOR_THEM)
+            sm = split["me"][key] if key in split["me"] else None
+            sthem = split["them"][key] if key in split["them"] else None
+            _person_series(fig, sm, sthem, combined_s=sigs[key], scatter=True)
             legend = True
         else:
             series = sigs[key].dropna()
-            _add_scatter_with_fit(fig, series.index, series.values, label, "#1f77b4")
+            _add_scatter_with_fit(fig, series.index, series.values, label, "#3aa0ff")
             legend = False
         _chart(fig, label, legend=legend)
         with cols[drawn % 2]:
@@ -396,20 +483,65 @@ GROUPS = {
                           "positivity_ratio", "emotional_balance"],
     "📊 Activity & cadence": ["volume", "reciprocity", "initiation_share",
                              "reply_latency_min", "late_night_share", "media_share"],
-    "🤝 Connection & affection": ["affection", "emoji_rate", "question_rate",
-                                 "avg_words", "vulnerability"],
+    "🤝 Connection & affection": ["affection", "encouragement", "emoji_rate",
+                                 "question_rate", "avg_words", "vulnerability"],
 }
 SPECIAL = ["🧲 Pursue–withdraw (push–pull)", "🔬 Gottman (Four Horsemen)",
            "🧭 Who leads (causality)", "🤝 Trust signals"]
 
 st.divider()
 section = st.radio("Section", list(GROUPS.keys()) + SPECIAL, horizontal=True)
+
+# Per-person view mode (applies to all per-person charts).
+_view_opts = {
+    f"Both — {me_name} & {them_name}": "both",
+    f"{me_name} only": "me",
+    f"{them_name} only": "them",
+    "Combined (one line)": "combined",
+}
+_view_label = st.radio("Show", list(_view_opts.keys()), horizontal=True, index=0)
+VIEW_MODE = _view_opts[_view_label]
+
 st.caption(f"🔵 {me_name}   🔴 {them_name}   ·   dots = each period, line = best-fit trend"
            + ("   ·   outliers removed" if REMOVE_OUTLIERS else ""))
 
 # ---- Signal groups ----
 if section in GROUPS:
     render_grid(GROUPS[section])
+    # Explicit emotional-vs-practical two-line chart in the Emotional tone group.
+    if section.endswith("Emotional tone") and {"emotional_share", "practical_share"} <= set(sigs.columns):
+        emo, prac = sigs["emotional_share"].dropna(), sigs["practical_share"].dropna()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=emo.index, y=100 * emo.values, mode="lines+markers",
+                                 line=dict(width=2.6, color="#ff6f91"), marker=dict(size=5),
+                                 name="Emotional"))
+        fig.add_trace(go.Scatter(x=prac.index, y=100 * prac.values, mode="lines+markers",
+                                 line=dict(width=2.6, color="#4cc9f0"), marker=dict(size=5),
+                                 name="Practical"))
+        _chart(fig, "Emotional vs. practical messages (% of messages)", height=320, legend=True)
+        fig.update_layout(yaxis_title="% of messages")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("**Emotional** = strong sentiment or affection; **Practical** = logistics/"
+                   "coordination (plans, errands, money, times). When the pink line sits above "
+                   "the blue, the conversation is more feelings-driven than task-driven.")
+
+        # Top 10 most positive / most negative individual messages.
+        st.markdown("#### 💬 Strongest messages (by sentiment)")
+        e = sig.enrich(sub)
+        e = e[e["text"].str.len() > 3].copy()
+        e["who"] = e["is_from_me"].map({True: me_name, False: them_name})
+        view = e[["dt", "who", "text", "compound"]].rename(columns={"dt": "when", "compound": "score"})
+        pc, nc = st.columns(2)
+        with pc:
+            st.markdown("**🟢 Top 10 most positive**")
+            st.dataframe(view.nlargest(10, "score").round({"score": 2}),
+                         hide_index=True, use_container_width=True, height=380)
+        with nc:
+            st.markdown("**🔴 Top 10 most negative**")
+            st.dataframe(view.nsmallest(10, "score").round({"score": 2}),
+                         hide_index=True, use_container_width=True, height=380)
+        st.caption("Ranked by per-message VADER score (−1 to +1). Great for seeing the actual "
+                   "high and low moments behind the trends.")
 
 # ---- Pursue–withdraw (push–pull) ----
 elif section == SPECIAL[0]:
@@ -528,16 +660,19 @@ elif section == SPECIAL[1]:
     st.markdown("#### Each Horseman — rate per 100 messages (rising = worse, falling = better)")
     st.caption("Normalized by message volume, so a busy month doesn't look worse just "
                "because there were more texts. This is the **relative-change** view.")
+    def _combined_rate(gdf_a, gdf_b, col):
+        cnt = gdf_a[col].add(gdf_b[col], fill_value=0) if col in gdf_a and col in gdf_b else pd.Series(dtype=float)
+        vol = gdf_a["volume"].add(gdf_b["volume"], fill_value=0)
+        if cnt.empty:
+            return cnt
+        w = max(3, len(cnt) // 6)
+        return 100 * cnt.rolling(w, min_periods=1).sum() / vol.rolling(w, min_periods=1).sum()
+
     hcols = st.columns(2)
     for i, key in enumerate(gottman.HORSEMEN):
-        rm, rt = _windowed_rate(me_g, key), _windowed_rate(them_g, key)
         fig = go.Figure()
-        if not rm.empty:
-            fig.add_trace(go.Scatter(x=rm.index, y=rm.values, mode="lines",
-                                     line=dict(width=2.5, color=COLOR_ME), name=me_name))
-        if not rt.empty:
-            fig.add_trace(go.Scatter(x=rt.index, y=rt.values, mode="lines",
-                                     line=dict(width=2.5, color=COLOR_THEM), name=them_name))
+        _person_series(fig, _windowed_rate(me_g, key), _windowed_rate(them_g, key),
+                       combined_s=_combined_rate(me_g, them_g, key), scatter=False)
         _chart(fig, gottman.LABELS[key], legend=True)
         fig.update_layout(yaxis_title="per 100 msgs")
         with hcols[i % 2]:
@@ -654,17 +789,20 @@ elif section == SPECIAL[3]:
     m3.metric(f"{me_name}: accountability", f"{tsum.get('accountability_me', 0):.1f}", "per 100 msgs", delta_color="off")
     m4.metric(f"{them_name}: trust affirmed", f"{tsum.get('affirmation_them', 0):.1f}", "per 100 msgs", delta_color="off")
 
+    def _combined_trate(col):
+        cnt = me_t[col].add(them_t[col], fill_value=0) if col in me_t and col in them_t else pd.Series(dtype=float)
+        vol = me_t["volume"].add(them_t["volume"], fill_value=0)
+        if cnt.empty:
+            return cnt
+        w = max(3, len(cnt) // 6)
+        return 100 * cnt.rolling(w, min_periods=1).sum() / vol.rolling(w, min_periods=1).sum()
+
     st.markdown("#### Trust-related language over time (rate per 100 messages)")
     tcols = st.columns(2)
     for i, cat in enumerate(trust.CATEGORIES):
-        rm, rt = _trate(me_t, cat), _trate(them_t, cat)
         fig = go.Figure()
-        if not rm.empty:
-            fig.add_trace(go.Scatter(x=rm.index, y=rm.values, mode="lines",
-                                     line=dict(width=2.5, color=COLOR_ME), name=me_name))
-        if not rt.empty:
-            fig.add_trace(go.Scatter(x=rt.index, y=rt.values, mode="lines",
-                                     line=dict(width=2.5, color=COLOR_THEM), name=them_name))
+        _person_series(fig, _trate(me_t, cat), _trate(them_t, cat),
+                       combined_s=_combined_trate(cat), scatter=False)
         _chart(fig, trust.LABELS[cat], legend=True)
         fig.update_layout(yaxis_title="per 100 msgs")
         with tcols[i % 2]:

@@ -85,6 +85,16 @@ def is_alias(name: str) -> bool:
     return name in load() and not name.startswith("_")
 
 
+def children() -> list:
+    """Canonical names marked as the user's children (for the family section)."""
+    return [c for c in load().get("_children", [])]
+
+
+def me_name() -> str:
+    """The user's display name (config), or a generic default."""
+    return load().get("_me", "Me")
+
+
 def primary_identifier(canonical: str) -> str:
     """A representative identifier (for photo/name lookup) for a canonical name."""
     ids = load().get(canonical)
