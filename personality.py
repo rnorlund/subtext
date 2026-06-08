@@ -135,6 +135,11 @@ def analyze(df: pd.DataFrame, baseline: dict | None = None) -> dict:
 
 AXES = [("E", "I"), ("N", "S"), ("F", "T"), ("P", "J")]
 
+FULL_NAME = {
+    "E": "Extraverted", "I": "Introverted", "N": "Intuitive", "S": "Sensing",
+    "F": "Feeling", "T": "Thinking", "P": "Perceiving", "J": "Judging",
+}
+
 TYPE_DESC = {
     "INTJ": "Architect — strategic, independent, long-range planner.",
     "INTP": "Logician — analytical, curious, idea-driven.",

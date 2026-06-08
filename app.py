@@ -937,7 +937,8 @@ elif section == SPECIAL[4]:
             st.caption(personality.TYPE_DESC.get(r["type"], ""))
             for a, b in personality.AXES:
                 hi, lo = (a, b) if r[a] >= r[b] else (b, a)
-                st.markdown(f"**{hi} {r[hi]:.0f}%** &nbsp;·&nbsp; {lo} {r[lo]:.0f}%")
+                fn = personality.FULL_NAME
+                st.markdown(f"**{fn[hi]} {r[hi]:.0f}%** &nbsp;·&nbsp; {fn[lo]} {r[lo]:.0f}%")
                 st.progress(int(r[hi]))
             st.caption(f"based on {r['n']:,} messages")
 
