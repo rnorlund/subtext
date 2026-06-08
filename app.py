@@ -14,10 +14,14 @@ signals plotted over time. Built on the cached table from extract.py.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+DEMO = os.environ.get("MSGANALYTICS_DEMO") == "1"
 
 import extract
 import signals as sig
@@ -34,8 +38,25 @@ st.set_page_config(page_title="Message Analytics", layout="wide")
 
 @st.cache_data(show_spinner="Loading messages…")
 def get_data(rebuild: bool) -> pd.DataFrame:
+    if DEMO:                                  # public preview on synthetic data
+        import demo_data
+        return demo_data.demo_dataframe()
     # Merge aliased identifiers (a person's email + phone) into one person.
     return aliases.apply_aliases(extract.load_cached(rebuild=rebuild))
+
+
+def _children_list():
+    if DEMO:
+        import demo_data
+        return demo_data.CHILDREN
+    return aliases.children()
+
+
+def _my_name():
+    if DEMO:
+        import demo_data
+        return demo_data.ME_NAME
+    return aliases.me_name()
 
 
 def _subset(contact: str, months: int, rebuild: bool) -> pd.DataFrame:
@@ -135,7 +156,11 @@ COLOR_THEM = "#ff5fa2"    # them — vivid pink
 
 
 st.title("💬 Message Analytics")
-st.caption("100% local. Nothing leaves your machine.")
+if DEMO:
+    st.success("🧪 **DEMO MODE** — showing synthetic, deidentified sample data "
+               "(no real messages). This is the public preview.")
+else:
+    st.caption("100% local. Nothing leaves your machine.")
 
 with st.sidebar:
     st.header("Controls")
@@ -169,7 +194,7 @@ with st.sidebar:
         return contacts.resolve_name(c) or str(c)
 
     view_opts = ["Single relationship", "All relationships"]
-    if aliases.children():
+    if _children_list():
         view_opts.append("👨‍👩‍👧 Family (kids)")
     mode = st.radio("View", view_opts, index=0)
     contact = st.selectbox(
@@ -181,7 +206,7 @@ with st.sidebar:
     freq_label = st.radio("Granularity", ["Daily", "Weekly", "Monthly"], index=1)
     freq = {"Daily": "D", "Weekly": "W", "Monthly": "ME"}[freq_label]
     st.divider()
-    me_name = st.text_input("Your name", value=aliases.me_name())
+    me_name = st.text_input("Your name", value=_my_name())
     them_name = st.text_input("Their name", value=disp_name(contact))
 
 # Coverage summary up top.
@@ -260,7 +285,7 @@ if mode == "👨‍👩‍👧 Family (kids)":
         "**Correlation, not proof of causation** — kids' moods have countless causes "
         "beyond texts. A reflection tool, not a verdict."
     )
-    kids = [k for k in aliases.children() if k in counts.index]
+    kids = [k for k in _children_list() if k in counts.index]
     if not kids:
         st.warning("No configured children found in the data.")
         st.stop()
@@ -529,25 +554,21 @@ SPECIAL = ["🧲 Pursue–withdraw (push–pull)", "🔬 Gottman (Four Horsemen)
 st.divider()
 st.markdown("**Section**")
 _sections = list(GROUPS.keys()) + SPECIAL
-_icon_keys = ["emotional", "activity", "connection", "pushpull", "gottman",
-              "wholeads", "trust", "personality"]
-_short = ["Emotional tone", "Activity & cadence", "Connection & affection",
-          "Pursue–withdraw", "Gottman", "Who leads", "Trust signals", "🧠 Personality"]
-_icons = load_icons()
+# Unified emoji-in-button labels (consistent, icon inside the button).
+_labels = ["💚 Emotional", "📊 Activity", "🤝 Connection", "🧲 Pursue–withdraw",
+           "🔬 Gottman", "🧭 Who leads", "🛡️ Trust", "🧠 Personality"]
 if st.session_state.get("section") not in _sections:
     st.session_state["section"] = _sections[0]
 _ncol = 4
 for _row in range(0, len(_sections), _ncol):
-    _cols = st.columns(_ncol)
+    _cols = st.columns(_ncol, gap="small")
     for _j in range(_ncol):
         _i = _row + _j
         if _i >= len(_sections):
             break
         with _cols[_j]:
-            if _icons.get(_icon_keys[_i]):
-                st.image(_icons[_icon_keys[_i]], width=46)
             _active = st.session_state["section"] == _sections[_i]
-            if st.button(_short[_i], key=f"secbtn_{_i}", use_container_width=True,
+            if st.button(_labels[_i], key=f"secbtn_{_i}", use_container_width=True,
                          type="primary" if _active else "secondary"):
                 st.session_state["section"] = _sections[_i]
 section = st.session_state["section"]
