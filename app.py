@@ -262,14 +262,27 @@ if mode == "All relationships":
     ov = ov.copy()
     ov.index = [disp_name(c) for c in ov.index]
 
-    # Optional: restrict to your core/family people so acquaintances don't crowd the charts.
+    # Filters so acquaintances don't crowd the charts: a core/family list and/or
+    # an adjustable minimum-message threshold.
     _main = _main_list()
-    if _main:
-        only_main = st.checkbox("⭐ Main people only (your family/core)", value=True)
-        if only_main:
-            present = [m for m in _main if m in ov.index]
-            if present:
-                ov = ov.loc[present]
+    fcol = st.columns([2, 3])
+    with fcol[0]:
+        only_main = st.checkbox("⭐ Main people only (family/core)", value=bool(_main)) if _main else False
+    with fcol[1]:
+        max_m = int(ov["messages"].max())
+        min_msgs = st.slider("Minimum messages", 20, min(2000, max_m), min(100, max_m),
+                             step=10, disabled=only_main)
+    if only_main:
+        present = [m for m in _main if m in ov.index]
+        if present:
+            ov = ov.loc[present]
+    else:
+        ov = ov[ov["messages"] >= min_msgs]
+    if ov.empty:
+        st.warning("No contacts match the current filter.")
+        st.stop()
+    st.caption(f"Showing **{len(ov)}** "
+               + ("core people." if only_main else f"contacts with ≥ {min_msgs} messages."))
     disp = ov[list(overview.DISPLAY_COLS.keys())].rename(columns=overview.DISPLAY_COLS)
     st.dataframe(
         disp.style.format({
@@ -300,7 +313,7 @@ if mode == "All relationships":
         st.plotly_chart(fig, use_container_width=True)
         st.caption("Only the 12 highest-volume contacts are labeled; hover for the rest.")
     with c2:
-        st.markdown("**Most & least positive** (≥50 msgs)")
+        st.markdown("**Most & least positive**")
         ranked = ov.sort_values("net_sentiment")
         tail = ranked if len(ranked) <= 16 else pd.concat([ranked.head(8), ranked.tail(8)])
         # Force categorical y — otherwise phone-number-like labels become a numeric axis.

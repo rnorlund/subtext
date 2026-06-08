@@ -15,7 +15,7 @@ import pandas as pd
 import signals as sig
 
 
-def summarize(df: pd.DataFrame, min_msgs: int = 50, top: int = 50) -> pd.DataFrame:
+def summarize(df: pd.DataFrame, min_msgs: int = 20, top: int = 300) -> pd.DataFrame:
     """Per-contact summary metrics, ranked by volume.
 
     Runs VADER once over all 1:1 messages, then aggregates — efficient even
