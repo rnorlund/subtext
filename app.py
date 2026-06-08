@@ -27,6 +27,7 @@ import contacts
 import gottman
 import aliases
 import trust
+import personality
 
 st.set_page_config(page_title="Message Analytics", layout="wide")
 
@@ -85,6 +86,42 @@ def get_gottman_summary(contact: str, months: int, rebuild: bool) -> dict:
 @st.cache_data(show_spinner="Computing trust signals…")
 def get_trust(contact: str, freq: str, months: int, rebuild: bool) -> dict:
     return trust.compute_trust(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Estimating personality…")
+def get_personality(contact: str, months: int, rebuild: bool) -> dict:
+    return personality.analyze(_subset(contact, months, rebuild))
+
+
+@st.cache_data
+def load_icons() -> dict:
+    """Slice icons.png (4×2 grid) into per-section square PNGs, trimmed & centered."""
+    import os
+    from io import BytesIO
+    from PIL import Image
+    if not os.path.exists("icons.png"):
+        return {}
+    im = Image.open("icons.png").convert("RGBA")
+    W, H = im.size
+    cols, rows = 4, 2
+    cw, ch = W // cols, H // rows
+    order = ["emotional", "activity", "connection", "pushpull",
+             "gottman", "wholeads", "trust", "personality"]
+    out = {}
+    for idx, key in enumerate(order):
+        r, c = divmod(idx, cols)
+        cell = im.crop((c * cw, r * ch, (c + 1) * cw, (r + 1) * ch))
+        bbox = cell.getbbox()
+        if not bbox:          # empty cell (e.g. no personality icon yet) — skip
+            continue
+        cell = cell.crop(bbox)
+        s = max(cell.size) + 16
+        canvas = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+        canvas.paste(cell, ((s - cell.size[0]) // 2, (s - cell.size[1]) // 2), cell)
+        buf = BytesIO()
+        canvas.save(buf, "PNG")
+        out[key] = buf.getvalue()
+    return out
 
 
 @st.cache_data(show_spinner="Summarizing all relationships…")
@@ -487,10 +524,33 @@ GROUPS = {
                                  "question_rate", "avg_words", "vulnerability"],
 }
 SPECIAL = ["🧲 Pursue–withdraw (push–pull)", "🔬 Gottman (Four Horsemen)",
-           "🧭 Who leads (causality)", "🤝 Trust signals"]
+           "🧭 Who leads (causality)", "🤝 Trust signals", "🧠 Personality"]
 
 st.divider()
-section = st.radio("Section", list(GROUPS.keys()) + SPECIAL, horizontal=True)
+st.markdown("**Section**")
+_sections = list(GROUPS.keys()) + SPECIAL
+_icon_keys = ["emotional", "activity", "connection", "pushpull", "gottman",
+              "wholeads", "trust", "personality"]
+_short = ["Emotional tone", "Activity & cadence", "Connection & affection",
+          "Pursue–withdraw", "Gottman", "Who leads", "Trust signals", "🧠 Personality"]
+_icons = load_icons()
+if st.session_state.get("section") not in _sections:
+    st.session_state["section"] = _sections[0]
+_ncol = 4
+for _row in range(0, len(_sections), _ncol):
+    _cols = st.columns(_ncol)
+    for _j in range(_ncol):
+        _i = _row + _j
+        if _i >= len(_sections):
+            break
+        with _cols[_j]:
+            if _icons.get(_icon_keys[_i]):
+                st.image(_icons[_icon_keys[_i]], width=46)
+            _active = st.session_state["section"] == _sections[_i]
+            if st.button(_short[_i], key=f"secbtn_{_i}", use_container_width=True,
+                         type="primary" if _active else "secondary"):
+                st.session_state["section"] = _sections[_i]
+section = st.session_state["section"]
 
 # Per-person view mode (applies to all per-person charts).
 _view_opts = {
@@ -831,3 +891,35 @@ elif section == SPECIAL[3]:
     show = fl[fl["category"].isin(pick)][["dt", "who", "category", "text"]].rename(columns={"dt": "when"})
     st.caption(f"{len(show)} messages. Reading these in context is far more honest than any single number.")
     st.dataframe(show.sort_values("when"), use_container_width=True, height=360, hide_index=True)
+
+# ---- Personality (MBTI-style) ----
+elif section == SPECIAL[4]:
+    p = get_personality(contact, months, rebuild)
+    st.caption("Type indicators estimated from writing style across the four MBTI "
+               "dichotomies. A complementary read on language patterns — most reliable "
+               "with a few hundred+ messages per person.")
+
+    def _render_type(col, label, r, color):
+        with col:
+            if not r:
+                st.info(f"Not enough messages for {label}.")
+                return
+            st.markdown(f"#### {label}")
+            st.markdown(f"<div style='font-size:48px;font-weight:700;color:{color};"
+                        f"line-height:1'>{r['type']}</div>", unsafe_allow_html=True)
+            st.caption(personality.TYPE_DESC.get(r["type"], ""))
+            for a, b in personality.AXES:
+                hi, lo = (a, b) if r[a] >= r[b] else (b, a)
+                st.markdown(f"**{hi} {r[hi]:.0f}%** &nbsp;·&nbsp; {lo} {r[lo]:.0f}%")
+                st.progress(int(r[hi]))
+            st.caption(f"based on {r['n']:,} messages")
+
+    c1, c2 = st.columns(2)
+    _render_type(c1, me_name, p.get("me", {}), COLOR_ME)
+    _render_type(c2, them_name, p.get("them", {}), COLOR_THEM)
+
+    st.divider()
+    st.caption("Dichotomies: **E/I** extraversion · **N/S** intuition/sensing · "
+               "**F/T** feeling/thinking · **P/J** perceiving/judging. Estimated from "
+               "word-usage proxies (social/abstract/emotion/planning language), not a "
+               "formal questionnaire — use as a complementary indicator.")

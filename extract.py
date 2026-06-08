@@ -80,6 +80,35 @@ def build_dataframe(db_path: str = ml.DEFAULT_DB) -> pd.DataFrame:
                     "n_emoji": count_emoji(text),
                 }
             )
+    # Recover ORPHANED messages: iCloud sync can land messages in the DB without
+    # a chat_message_join row, so the chat walk above misses them. Pull any such
+    # message by its sender handle and attribute it to that 1:1 contact.
+    seen_ids = {r[0] for r in conn.execute(
+        "SELECT DISTINCT message_id FROM chat_message_join")}
+    orphans = conn.execute(
+        """
+        SELECT m.ROWID AS rid, m.text, m.attributedBody, m.date,
+               m.is_from_me, m.service, h.id AS sender_id
+        FROM message m JOIN handle h ON h.ROWID = m.handle_id
+        WHERE m.handle_id != 0
+        """
+    ).fetchall()
+    n_orphan = 0
+    for r in orphans:
+        if r["rid"] in seen_ids:
+            continue
+        text = ml.message_text(r) or ""
+        dt = ml.apple_time_to_dt(r["date"])
+        rows.append({
+            "dt": dt, "contact": r["sender_id"], "chat_id": -1,
+            "chat_label": r["sender_id"], "is_group": False,
+            "is_from_me": bool(r["is_from_me"]),
+            "direction": "sent" if r["is_from_me"] else "received",
+            "text": text, "service": r["service"] or "",
+            "n_chars": len(text), "n_words": len(text.split()),
+            "has_emoji": count_emoji(text) > 0, "n_emoji": count_emoji(text),
+        })
+        n_orphan += 1
     conn.close()
 
     df = pd.DataFrame(rows)
