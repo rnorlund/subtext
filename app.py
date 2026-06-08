@@ -109,9 +109,15 @@ def get_trust(contact: str, freq: str, months: int, rebuild: bool) -> dict:
     return trust.compute_trust(_subset(contact, months, rebuild), freq=freq)
 
 
+@st.cache_data(show_spinner="Calibrating personality baseline…")
+def get_personality_baseline(rebuild: bool) -> dict:
+    return personality.population(get_data(rebuild))
+
+
 @st.cache_data(show_spinner="Estimating personality…")
 def get_personality(contact: str, months: int, rebuild: bool) -> dict:
-    return personality.analyze(_subset(contact, months, rebuild))
+    return personality.analyze(_subset(contact, months, rebuild),
+                               baseline=get_personality_baseline(rebuild))
 
 
 @st.cache_data
