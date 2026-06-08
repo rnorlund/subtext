@@ -931,16 +931,26 @@ elif section == SPECIAL[4]:
             if not r:
                 st.info(f"Not enough messages for {label}.")
                 return
+            MARGIN = 6  # within ±6% of 50 = essentially even, don't over-read
+            typ = r["type"]
+            # Lowercase letters whose axis is a near-tie, to signal low confidence.
+            pcts = [r[typ[0]], r[typ[1]], r[typ[2]], r[typ[3]]]
+            disp = "".join(c if abs(p - 50) >= MARGIN else c.lower()
+                           for c, p in zip(typ, pcts))
             st.markdown(f"#### {label}")
             st.markdown(f"<div style='font-size:48px;font-weight:700;color:{color};"
-                        f"line-height:1'>{r['type']}</div>", unsafe_allow_html=True)
-            st.caption(personality.TYPE_DESC.get(r["type"], ""))
+                        f"line-height:1'>{disp}</div>", unsafe_allow_html=True)
+            st.caption(personality.TYPE_DESC.get(typ, ""))
             for a, b in personality.AXES:
                 hi, lo = (a, b) if r[a] >= r[b] else (b, a)
                 fn = personality.FULL_NAME
-                st.markdown(f"**{fn[hi]} {r[hi]:.0f}%** &nbsp;·&nbsp; {fn[lo]} {r[lo]:.0f}%")
+                even = abs(r[hi] - 50) < MARGIN
+                note = "  &nbsp;·&nbsp; ⚖️ *too close to call*" if even else ""
+                st.markdown(f"**{fn[hi]} {r[hi]:.0f}%** &nbsp;·&nbsp; {fn[lo]} {r[lo]:.0f}%{note}",
+                            unsafe_allow_html=True)
                 st.progress(int(r[hi]))
-            st.caption(f"based on {r['n']:,} messages")
+            st.caption(f"based on {r['n']:,} messages · lowercase letters above = "
+                       "an essentially even axis (don't read a real difference there)")
 
     c1, c2 = st.columns(2)
     _render_type(c1, me_name, p.get("me", {}), COLOR_ME)
