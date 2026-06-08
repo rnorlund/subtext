@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to aliases.json (gitignored) and fill with your own data. Maps canonical names to identifiers, plus exclusions. Identifiers are matched by last-10 phone digits or lowercased email.",
+
+  "_exclude": ["pharmacy-alerts@example.com", "noreply@example.com"],
+  "_exclude_prefixes": ["800", "833", "844", "855", "866", "877", "888"],
+
+  "Alex Example": ["alex@example.com", "5551234567"],
+  "Sam Example": ["+15559876543"]
+}

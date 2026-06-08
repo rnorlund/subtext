@@ -1,0 +1,695 @@
+#!/usr/bin/env python3
+"""
+app.py — Local web dashboard for your message analytics.
+
+Run it with:
+    streamlit run app.py
+
+Opens at http://localhost:8501. Everything runs on your machine; no data
+leaves the computer.
+
+Pick a contact, choose a time granularity, and explore all 13 relationship
+signals plotted over time. Built on the cached table from extract.py.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+import extract
+import signals as sig
+import dynamics as dyn
+import overview
+import contacts
+import gottman
+import aliases
+import trust
+
+st.set_page_config(page_title="Message Analytics", layout="wide")
+
+
+@st.cache_data(show_spinner="Loading messages…")
+def get_data(rebuild: bool) -> pd.DataFrame:
+    # Merge aliased identifiers (e.g. Sarah's email + phone) into one person.
+    return aliases.apply_aliases(extract.load_cached(rebuild=rebuild))
+
+
+def _subset(contact: str, months: int, rebuild: bool) -> pd.DataFrame:
+    """1:1 messages for a contact, optionally limited to the last N months."""
+    df = get_data(rebuild)
+    sub = df[(df["contact"] == contact) & (~df["is_group"])]
+    if months and not sub.empty:
+        cutoff = sub["dt"].max() - pd.DateOffset(months=months)
+        sub = sub[sub["dt"] >= cutoff]
+    return sub
+
+
+@st.cache_data(show_spinner="Computing signals…")
+def get_signals(contact: str, freq: str, months: int, rebuild: bool) -> pd.DataFrame:
+    return sig.compute_signals(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Splitting signals by person…")
+def get_signals_split(contact: str, freq: str, months: int, rebuild: bool) -> dict:
+    return sig.compute_signals_split(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Computing pursue–withdraw dynamics…")
+def get_pursuit(contact: str, freq: str, months: int, rebuild: bool) -> pd.DataFrame:
+    return dyn.compute_pursuit(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Computing push–pull…")
+def get_push_pull(contact: str, freq: str, months: int, rebuild: bool) -> pd.DataFrame:
+    return dyn.compute_push_pull(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Analyzing who leads…")
+def get_who_leads(contact: str, freq: str, months: int, rebuild: bool) -> dict:
+    return dyn.who_leads(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Computing Gottman metrics…")
+def get_gottman(contact: str, freq: str, months: int, rebuild: bool) -> dict:
+    return gottman.compute_gottman(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Gottman summary…")
+def get_gottman_summary(contact: str, months: int, rebuild: bool) -> dict:
+    return gottman.summary(_subset(contact, months, rebuild))
+
+
+@st.cache_data(show_spinner="Computing trust signals…")
+def get_trust(contact: str, freq: str, months: int, rebuild: bool) -> dict:
+    return trust.compute_trust(_subset(contact, months, rebuild), freq=freq)
+
+
+@st.cache_data(show_spinner="Summarizing all relationships…")
+def get_overview(rebuild: bool) -> pd.DataFrame:
+    return overview.summarize(get_data(rebuild))
+
+
+# Two-color scheme for per-person splits — bright, to pop on a dark background.
+COLOR_ME = "#3aa0ff"      # you — vivid sky blue
+COLOR_THEM = "#ff5fa2"    # them — vivid pink
+
+
+st.title("💬 Message Analytics")
+st.caption("100% local. Nothing leaves your machine.")
+
+with st.sidebar:
+    st.header("Controls")
+    rebuild = st.button("🔄 Rebuild from Messages DB")
+    try:
+        df = get_data(rebuild)
+    except PermissionError:
+        st.error(
+            "Can't read chat.db — grant **Full Disk Access** to VS Code / your "
+            "terminal in System Settings → Privacy & Security, then fully quit "
+            "(Cmd+Q) and reopen."
+        )
+        st.stop()
+
+    if df.empty:
+        st.warning("No messages found.")
+        st.stop()
+
+    # Rank 1:1 contacts by volume.
+    counts = (
+        df[~df["is_group"]]
+        .groupby("contact")
+        .size()
+        .sort_values(ascending=False)
+    )
+
+    # Resolve each identifier to a real contact name once.
+    def disp_name(c: str) -> str:
+        if aliases.is_alias(c):       # already a canonical person name
+            return c
+        return contacts.resolve_name(c) or str(c)
+
+    mode = st.radio("View", ["Single relationship", "All relationships"], index=0)
+    contact = st.selectbox(
+        "Contact",
+        counts.index.tolist(),
+        format_func=lambda c: f"{disp_name(c)}  ({counts[c]:,} msgs)",
+        disabled=(mode == "All relationships"),
+    )
+    freq_label = st.radio("Granularity", ["Daily", "Weekly", "Monthly"], index=1)
+    freq = {"Daily": "D", "Weekly": "W", "Monthly": "ME"}[freq_label]
+    st.divider()
+    me_name = st.text_input("Your name", value="Roger")
+    them_name = st.text_input("Their name", value=disp_name(contact))
+
+# Coverage summary up top.
+with st.expander("📊 Data coverage (read me — checks for iPhone-only gaps)"):
+    st.code(extract.coverage_summary(df))
+
+# ── All-relationships overview ────────────────────────────────────────────
+if mode == "All relationships":
+    st.subheader("🏆 All relationships — where you're thriving & where to invest")
+    ov = get_overview(rebuild)
+    if ov.empty:
+        st.warning("Not enough data.")
+        st.stop()
+
+    ov = ov.copy()
+    ov.index = [disp_name(c) for c in ov.index]
+    disp = ov[list(overview.DISPLAY_COLS.keys())].rename(columns=overview.DISPLAY_COLS)
+    st.dataframe(
+        disp.style.format({
+            "Your share": "{:.0%}", "Net sentiment": "{:+.2f}",
+            "% positive": "{:.0%}", "% negative": "{:.0%}",
+            "Pos:Neg ratio": "{:.1f}", "Affection": "{:.2f}",
+            "Emoji/msg": "{:.2f}", "Vulnerability": "{:.3f}",
+        }).background_gradient(subset=["Net sentiment", "Pos:Neg ratio"], cmap="RdYlGn"),
+        use_container_width=True, height=520,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Warmth vs. activity** — bubble size = messages")
+        # Only label the top dozen by volume so text doesn't overlap; rest = hover.
+        topn = set(ov.sort_values("messages", ascending=False).head(12).index)
+        labels = [str(c) if c in topn else "" for c in ov.index]
+        fig = go.Figure(go.Scatter(
+            x=ov["messages"], y=ov["net_sentiment"], mode="markers+text",
+            text=labels, textposition="top center", textfont=dict(size=10),
+            hovertext=[str(c) for c in ov.index], hoverinfo="text+x+y",
+            marker=dict(size=(ov["messages"] ** 0.5) / 2 + 4, color=ov["net_sentiment"],
+                        colorscale="RdYlGn", showscale=True, cmin=-0.3, cmax=0.6,
+                        line=dict(width=0.5, color="rgba(255,255,255,0.3)")),
+        ))
+        fig.update_layout(height=460, xaxis_title="messages (log)", xaxis_type="log",
+                          yaxis_title="net sentiment", margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Only the 12 highest-volume contacts are labeled; hover for the rest.")
+    with c2:
+        st.markdown("**Most & least positive** (≥50 msgs)")
+        ranked = ov.sort_values("net_sentiment")
+        tail = pd.concat([ranked.head(8), ranked.tail(8)])
+        # Force categorical y — otherwise phone-number-like labels become a numeric axis.
+        ylabels = [str(c) for c in tail.index]
+        bar = go.Figure(go.Bar(
+            x=tail["net_sentiment"].values, y=ylabels, orientation="h",
+            marker=dict(color=tail["net_sentiment"].values, colorscale="RdYlGn", cmin=-0.3, cmax=0.6),
+        ))
+        bar.update_layout(height=460, margin=dict(l=10, r=10, t=10, b=10),
+                          xaxis_title="net sentiment",
+                          yaxis=dict(type="category", categoryorder="array",
+                                     categoryarray=ylabels, autorange="reversed"))
+        st.plotly_chart(bar, use_container_width=True)
+
+    st.caption(
+        "Sentiment via VADER. 'Days since last' flags relationships going quiet. "
+        "Switch to **Single relationship** in the sidebar for deep-dive charts."
+    )
+    st.stop()
+
+# Header: contact photo + name.
+def _decode_photo(raw: bytes):
+    """Return PNG bytes PIL/Streamlit can render, or None if undecodable."""
+    if not raw:
+        return None
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(raw))
+        img.load()
+        buf = BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+photo = _decode_photo(contacts.get_photo(aliases.primary_identifier(contact)))
+hcol = st.columns([1, 9])
+with hcol[0]:
+    if photo:
+        st.image(photo, width=72)
+    else:
+        st.markdown(
+            f"<div style='width:72px;height:72px;border-radius:50%;background:#1f77b4;"
+            f"display:flex;align-items:center;justify-content:center;font-size:30px;"
+            f"color:white;'>{(them_name or '?')[0].upper()}</div>",
+            unsafe_allow_html=True,
+        )
+with hcol[1]:
+    st.markdown(f"### {them_name}")
+    st.caption(f"{contact}")
+
+# ── Controls: time range + outlier toggle ─────────────────────────────────
+tc = st.columns([5, 2])
+with tc[0]:
+    range_label = st.radio(
+        "Time range", ["Last 6 months", "Last 12 months", "All time"],
+        index=2, horizontal=True)
+    months = {"Last 6 months": 6, "Last 12 months": 12, "All time": 0}[range_label]
+with tc[1]:
+    REMOVE_OUTLIERS = st.checkbox("Remove outliers", value=True)
+
+sub = _subset(contact, months, rebuild)
+if sub.empty or len(sub) < 5:
+    st.warning("Not enough messages in this time range to chart.")
+    st.stop()
+
+sigs = get_signals(contact, freq, months, rebuild)
+split = get_signals_split(contact, freq, months, rebuild)
+
+# Headline metrics.
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Messages", f"{len(sub):,}")
+c2.metric(f"{me_name} sent", f"{100*sub['is_from_me'].mean():.0f}%")
+c3.metric("Span", f"{(sub['dt'].max() - sub['dt'].min()).days:,} days")
+c4.metric("Avg net sentiment", f"{sig.enrich(sub)['compound'].mean():+.2f}")
+
+
+def _drop_outliers(x_dt, y):
+    """IQR outlier removal (1.5×), preserving NaNs, when the toggle is on."""
+    ys = pd.Series(list(y))
+    if not REMOVE_OUTLIERS or ys.notna().sum() < 4:
+        return list(x_dt), list(ys)
+    q1, q3 = ys.quantile(0.25), ys.quantile(0.75)
+    iqr = q3 - q1
+    lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    keep = ys.between(lo, hi) | ys.isna()
+    xk = [x for x, k in zip(list(x_dt), keep) if k]
+    yk = [v for v, k in zip(list(ys), keep) if k]
+    return xk, yk
+
+
+def _add_scatter_with_fit(fig, x_dt, y, name, color, drop=True):
+    """Add a set of dots plus its linear best-fit line.
+
+    drop=False skips outlier removal — important for rare-event/count series
+    (e.g. Four Horsemen) where the rare spikes ARE the signal.
+    """
+    if drop:
+        x_dt, ylist = _drop_outliers(x_dt, y)
+    else:
+        ylist = list(y)
+    y = pd.Series(ylist, index=range(len(ylist)))
+    mask = y.notna().values
+    if mask.sum() == 0:
+        return
+    fig.add_trace(go.Scatter(
+        x=x_dt, y=list(y), mode="markers", name=name,
+        marker=dict(size=8, color=color, opacity=0.95,
+                    line=dict(width=1, color="rgba(255,255,255,0.85)"))))
+    if mask.sum() >= 2:
+        xnum = np.array([pd.Timestamp(t).toordinal() for t in x_dt])[mask]
+        yv = y.values[mask].astype(float)
+        slope, intercept = np.polyfit(xnum, yv, 1)
+        xline = np.array([xnum.min(), xnum.max()])
+        fig.add_trace(go.Scatter(
+            x=[pd.Timestamp.fromordinal(int(v)) for v in xline],
+            y=slope * xline + intercept, mode="lines",
+            line=dict(width=2.5, color=color), showlegend=False, hoverinfo="skip"))
+
+
+def _chart(fig, label, height=260, legend=False):
+    fig.update_layout(
+        title=dict(text=label, font=dict(size=15)),
+        height=height, margin=dict(l=10, r=10, t=40, b=10),
+        showlegend=legend, xaxis_title=None, yaxis_title=None,
+        legend=dict(orientation="h", y=1.0, x=0))
+    return fig
+
+
+def _selected_x(event):
+    """Extract clicked x-values from a Streamlit plotly_chart selection event."""
+    try:
+        pts = event["selection"]["points"]
+    except Exception:
+        pts = getattr(getattr(event, "selection", None), "points", None) or []
+    return [p.get("x") for p in pts if p.get("x") is not None]
+
+
+def _messages_in_period(x, freq):
+    """Return the messages whose period-bin matches the clicked x value."""
+    key = pd.Timestamp(x)
+    s = sub.set_index("dt")
+    groups = list(s.groupby(pd.Grouper(freq=freq)))
+    best, best_gap = None, None
+    for label, gdf in groups:
+        gap = abs((pd.Timestamp(label) - key).total_seconds())
+        if best_gap is None or gap < best_gap:
+            best, best_gap = gdf, gap
+    return best.reset_index() if best is not None else pd.DataFrame()
+
+
+def _show_inspector(event, freq, flag=None):
+    """If a point was clicked, show the underlying messages for that period."""
+    xs = _selected_x(event)
+    if not xs:
+        return
+    gdf = _messages_in_period(xs[0], freq)
+    if gdf.empty:
+        return
+    e = sig.enrich(gdf)
+    if flag is not None:                       # only the flagged conflict messages
+        import gottman as _gm
+        e = _gm.enrich_gottman(gdf)
+        e = e[e[flag] > 0]
+    e = e.assign(who=e["is_from_me"].map({True: me_name, False: them_name}))
+    view = e[["dt", "who", "text", "compound"]].rename(
+        columns={"dt": "when", "compound": "sentiment"})
+    with st.expander(f"🔍 {len(view)} messages around {pd.Timestamp(xs[0]):%b %d, %Y}", expanded=True):
+        st.dataframe(view, use_container_width=True, height=320, hide_index=True)
+
+
+def render_grid(keys: list[str]) -> None:
+    cols = st.columns(2)
+    drawn = 0
+    for key in keys:
+        if key not in sigs:
+            continue
+        label, desc = sig.SIGNAL_META[key]
+        fig = go.Figure()
+        if key in sig.PER_PERSON_SIGNALS and not split["me"].empty:
+            sm, sthem = split["me"], split["them"]
+            if key in sm:
+                _add_scatter_with_fit(fig, sm.index, sm[key], me_name, COLOR_ME)
+            if key in sthem:
+                _add_scatter_with_fit(fig, sthem.index, sthem[key], them_name, COLOR_THEM)
+            legend = True
+        else:
+            series = sigs[key].dropna()
+            _add_scatter_with_fit(fig, series.index, series.values, label, "#1f77b4")
+            legend = False
+        _chart(fig, label, legend=legend)
+        with cols[drawn % 2]:
+            ev = st.plotly_chart(fig, use_container_width=True,
+                                 on_select="rerun", key=f"grid_{key}")
+            st.caption(desc + "  ·  *click a dot to read those messages*")
+            _show_inspector(ev, freq)
+        drawn += 1
+
+
+# ── Section selector: one group at a time ─────────────────────────────────
+GROUPS = {
+    "💚 Emotional tone": ["net_sentiment", "pct_positive", "pct_negative",
+                          "positivity_ratio", "emotional_balance"],
+    "📊 Activity & cadence": ["volume", "reciprocity", "initiation_share",
+                             "reply_latency_min", "late_night_share", "media_share"],
+    "🤝 Connection & affection": ["affection", "emoji_rate", "question_rate",
+                                 "avg_words", "vulnerability"],
+}
+SPECIAL = ["🧲 Pursue–withdraw (push–pull)", "🔬 Gottman (Four Horsemen)",
+           "🧭 Who leads (causality)", "🤝 Trust signals"]
+
+st.divider()
+section = st.radio("Section", list(GROUPS.keys()) + SPECIAL, horizontal=True)
+st.caption(f"🔵 {me_name}   🔴 {them_name}   ·   dots = each period, line = best-fit trend"
+           + ("   ·   outliers removed" if REMOVE_OUTLIERS else ""))
+
+# ---- Signal groups ----
+if section in GROUPS:
+    render_grid(GROUPS[section])
+
+# ---- Pursue–withdraw (push–pull) ----
+elif section == SPECIAL[0]:
+    pp = get_push_pull(contact, freq, months, rebuild)
+    if pp.empty or len(pp) < 4:
+        st.info("Not enough back-and-forth to model push–pull.")
+    else:
+        # PRIMARY: signed push–pull index (polarization) with smoothed trend + zones.
+        pol = pp["polarization"]
+        win = max(3, len(pol) // 8)
+        smooth = pol.rolling(win, center=True, min_periods=1).mean()
+        fig = go.Figure()
+        fig.add_hrect(y0=0, y1=pol.max() * 1.2 + 0.1, fillcolor="rgba(76,139,245,0.07)", line_width=0)
+        fig.add_hrect(y0=pol.min() * 1.2 - 0.1, y1=0, fillcolor="rgba(232,97,140,0.07)", line_width=0)
+        fig.add_trace(go.Scatter(x=pol.index, y=pol.values, mode="markers",
+                                 marker=dict(size=5, color="#888", opacity=0.45), name="per period"))
+        fig.add_trace(go.Scatter(x=smooth.index, y=smooth.values, mode="lines",
+                                 line=dict(width=4, color="#9467bd"), name=f"trend ({win}-pd avg)"))
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig.add_annotation(xref="paper", x=0.01, y=0.97, yref="paper", showarrow=False,
+                           text=f"▲ {me_name} pushes · {them_name} pulls back", font=dict(color=COLOR_ME, size=12))
+        fig.add_annotation(xref="paper", x=0.01, y=0.03, yref="paper", showarrow=False,
+                           text=f"▼ {them_name} pushes · {me_name} pulls back", font=dict(color=COLOR_THEM, size=12))
+        _chart(fig, "Push–pull index over time", height=420, legend=True)
+        fig.update_layout(yaxis_title="← they push    ·    you push →")
+        st.plotly_chart(fig, use_container_width=True)
+        recent = smooth.dropna().iloc[-1] if smooth.notna().any() else 0
+        who_push = (f"**you** tend to pursue while **{them_name}** pulls back"
+                    if recent > 0.05 else
+                    f"**{them_name}** tends to pursue while **you** pull back"
+                    if recent < -0.05 else "you're **fairly balanced**")
+        st.caption(
+            f"The signed index = (your lean-in − pull-back) − ({them_name}'s lean-in − pull-back). "
+            f"Above 0 = you push/they withdraw; below = they push/you withdraw; near 0 = symmetric. "
+            f"Most recently, {who_push}. The thick line is the smoothed trend so you can read the **evolution**."
+        )
+
+        # SECONDARY: coupling — how locked-together the cycle is (rolling correlation).
+        cwin = max(4, len(pp) // 5)
+        coupling = pp["me_pursuit"].rolling(cwin).corr(pp["them_withdrawal"])
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=coupling.index, y=coupling.values, mode="lines",
+                                  line=dict(width=3, color="#2ca02c")))
+        fig2.add_hline(y=0, line_dash="dot", line_color="gray")
+        _chart(fig2, f"Push–pull coupling (rolling {cwin}-pd correlation)", height=300)
+        fig2.update_layout(yaxis=dict(range=[-1, 1], title="corr(your pursuit, their withdrawal)"))
+        st.plotly_chart(fig2, use_container_width=True)
+        st.caption(
+            "**Coupling** = how tightly your pursuit and their withdrawal move together. "
+            "High positive stretches = an active push–pull cycle (you reach out → they pull back, "
+            "in lockstep). Near zero = the two aren't reacting to each other."
+        )
+
+# ---- Gottman ----
+elif section == SPECIAL[1]:
+    gs = get_gottman_summary(contact, months, rebuild)
+    g = get_gottman(contact, freq, months, rebuild)
+    pr_ratio = gs.get("positivity_ratio", 0)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Positivity ratio", f"{pr_ratio:.1f}:1",
+              "healthy ≥5:1" if pr_ratio >= 5 else "below 5:1 target")
+    m2.metric("Harsh startups", f"{gs.get('harsh_startup_pct', 0):.0f}%",
+              "of conversation openers are negative", delta_color="off")
+    m3.metric("Repair attempts", f"{gs.get('repair_per_100', 0):.1f}", "per 100 msgs", delta_color="off")
+
+    # Positivity ratio over time.
+    if "positivity_ratio" in g["shared"]:
+        pr = g["shared"]["positivity_ratio"].dropna()
+        fig = go.Figure()
+        _add_scatter_with_fit(fig, pr.index, pr.values, "Positivity ratio", "#2ca02c")
+        fig.add_hline(y=5, line_dash="dash", line_color="green",
+                      annotation_text="5:1 healthy", annotation_position="top left")
+        fig.add_hline(y=1, line_dash="dot", line_color="red",
+                      annotation_text="1:1 distress", annotation_position="bottom left")
+        _chart(fig, "Positivity ratio (Gottman 5:1)", height=320)
+        st.plotly_chart(fig, use_container_width=True)
+
+    me_g, them_g = g["me"], g["them"]
+
+    def _windowed_rate(gdf, cols=None):
+        """Rolling per-100-message rate (volume-normalized) — rises OR falls."""
+        if gdf.empty:
+            return pd.Series(dtype=float)
+        cols = cols or gottman.HORSEMEN
+        w = max(3, len(gdf) // 6)
+        num = gdf[cols].sum(axis=1) if isinstance(cols, list) else gdf[cols]
+        return 100 * num.rolling(w, min_periods=1).sum() / gdf["volume"].rolling(w, min_periods=1).sum()
+
+    # 1) COMBINED conflict trend — the "are we better or worse?" view.
+    st.markdown("#### Are conflict signals rising or falling?")
+    rate_me, rate_them = _windowed_rate(me_g), _windowed_rate(them_g)
+    fig = go.Figure()
+    if not rate_me.empty:
+        fig.add_trace(go.Scatter(x=rate_me.index, y=rate_me.values, mode="lines",
+                                 line=dict(width=3, color=COLOR_ME), name=me_name))
+    if not rate_them.empty:
+        fig.add_trace(go.Scatter(x=rate_them.index, y=rate_them.values, mode="lines",
+                                 line=dict(width=3, color=COLOR_THEM), name=them_name))
+    _chart(fig, "Four Horsemen — smoothed rate (per 100 messages)", height=340, legend=True)
+    fig.update_layout(yaxis_title="conflict markers / 100 msgs")
+    st.plotly_chart(fig, use_container_width=True)
+    # Verdict: compare first third vs last third of the combined rate.
+    both = pd.concat([rate_me, rate_them], axis=1).mean(axis=1).dropna()
+    if len(both) >= 4:
+        third = max(1, len(both) // 3)
+        early, late = both.iloc[:third].mean(), both.iloc[-third:].mean()
+        if late < early * 0.85:
+            v = f"📉 **Improving** — conflict markers fell from ~{early:.1f} to ~{late:.1f} per 100 msgs."
+        elif late > early * 1.15:
+            v = f"📈 **Worsening** — conflict markers rose from ~{early:.1f} to ~{late:.1f} per 100 msgs."
+        else:
+            v = f"➡️ **Stable** — roughly steady (~{late:.1f} per 100 msgs)."
+        st.info(v)
+
+    # 2) PER-HORSEMAN RATE — relative change (volume-normalized), can rise OR fall.
+    st.markdown("#### Each Horseman — rate per 100 messages (rising = worse, falling = better)")
+    st.caption("Normalized by message volume, so a busy month doesn't look worse just "
+               "because there were more texts. This is the **relative-change** view.")
+    hcols = st.columns(2)
+    for i, key in enumerate(gottman.HORSEMEN):
+        rm, rt = _windowed_rate(me_g, key), _windowed_rate(them_g, key)
+        fig = go.Figure()
+        if not rm.empty:
+            fig.add_trace(go.Scatter(x=rm.index, y=rm.values, mode="lines",
+                                     line=dict(width=2.5, color=COLOR_ME), name=me_name))
+        if not rt.empty:
+            fig.add_trace(go.Scatter(x=rt.index, y=rt.values, mode="lines",
+                                     line=dict(width=2.5, color=COLOR_THEM), name=them_name))
+        _chart(fig, gottman.LABELS[key], legend=True)
+        fig.update_layout(yaxis_title="per 100 msgs")
+        with hcols[i % 2]:
+            st.plotly_chart(fig, use_container_width=True)
+
+    # 3) INSPECT — every flagged conflict message, so odd points are readable.
+    st.markdown("#### 🔍 Inspect the actual conflict messages")
+    ge = gottman.enrich_gottman(sub)
+    ge["type"] = ge[gottman.HORSEMEN].idxmax(axis=1).where(ge[gottman.HORSEMEN].sum(axis=1) > 0)
+    flagged = ge[ge["type"].notna()].copy()
+    flagged["who"] = flagged["is_from_me"].map({True: me_name, False: them_name})
+    pick = st.multiselect("Show types", gottman.HORSEMEN, default=["contempt", "criticism"])
+    show = flagged[flagged["type"].isin(pick)][["dt", "who", "type", "text"]].rename(columns={"dt": "when"})
+    st.caption(f"{len(show)} flagged messages — read them to judge if the detector got it right.")
+    st.dataframe(show.sort_values("when"), use_container_width=True, height=340, hide_index=True)
+
+    st.caption(
+        "**Text proxies, not clinical diagnoses.** Four Horsemen (Gottman): criticism, "
+        "contempt, defensiveness, stonewalling predict breakdown; contempt is the strongest. "
+        "Smoothed rate shows the trend; cumulative shows timing; the table lets you verify each hit."
+    )
+
+# ---- Who leads ----
+elif section == SPECIAL[2]:
+    wl = get_who_leads(contact, freq, months, rebuild)
+    if not wl:
+        st.info("Not enough data.")
+    else:
+        st.markdown(
+            "**Who sets the emotional tone?** When one person sends an emotional "
+            "message, how often does the other **mirror it** in their next reply? "
+            "The person whose emotion gets mirrored *more* is the **leader**; the "
+            "other **follows**."
+        )
+
+        def _leader_block(col, kind, mine_caught, theirs_caught, color):
+            # mine_caught = how often THEY mirror MINE  -> if high, I lead.
+            # theirs_caught = how often I mirror THEIRS -> if high, they lead.
+            if abs(mine_caught - theirs_caught) < 0.03:
+                leader, follower, hi, lo = "Mutual", "", mine_caught, theirs_caught
+            elif mine_caught > theirs_caught:
+                leader, follower, hi, lo = me_name, them_name, mine_caught, theirs_caught
+            else:
+                leader, follower, hi, lo = them_name, me_name, theirs_caught, mine_caught
+            with col:
+                st.markdown(f"#### {kind}")
+                if leader == "Mutual":
+                    st.metric("Leader", "Mutual", "roughly even", delta_color="off")
+                else:
+                    st.metric("Leader 👑", leader,
+                              f"{follower} mirrors {leader} {hi:.0%} of the time", delta_color="off")
+                # Highlighted comparison bar: which reciprocation is bigger.
+                fig = go.Figure(go.Bar(
+                    x=[f"{them_name} mirrors\n{me_name}'s {kind.lower()}",
+                       f"{me_name} mirrors\n{them_name}'s {kind.lower()}"],
+                    y=[100 * mine_caught, 100 * theirs_caught],
+                    marker_color=[color if mine_caught >= theirs_caught else "#555",
+                                  color if theirs_caught > mine_caught else "#555"],
+                    text=[f"{mine_caught:.0%}", f"{theirs_caught:.0%}"], textposition="outside"))
+                fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10),
+                                  yaxis_title="% mirrored", showlegend=False,
+                                  yaxis=dict(range=[0, max(mine_caught, theirs_caught) * 130 + 5]))
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"The **taller, colored bar wins** — that emotion is more contagious, "
+                           f"so its sender (**{leader if leader!='Mutual' else 'neither clearly'}**) leads {kind.lower()}.")
+
+        cols = st.columns(2)
+        _leader_block(cols[0], "Negativity", wl["neg_me_to_them"], wl["neg_them_to_me"], "#E74C3C")
+        _leader_block(cols[1], "Positivity", wl["pos_me_to_them"], wl["pos_them_to_me"], "#2ca02c")
+
+        st.divider()
+        st.markdown("**Lead–lag mood correlation** (corroborating view)")
+        cc = wl.get("crosscorr", {})
+        if cc:
+            lags = sorted(cc)
+            peak = max(cc, key=lambda k: cc[k])
+            colors = ["#9467bd" if l != peak else "#FFA500" for l in lags]
+            fig2 = go.Figure(go.Bar(x=[str(l) for l in lags], y=[cc[l] for l in lags],
+                                    marker_color=colors))
+            fig2.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10),
+                               xaxis_title=f"lag: ◀ {me_name} leads    ·    {them_name} leads ▶",
+                               yaxis_title="sentiment correlation",
+                               title=dict(text="Highlighted bar = strongest alignment", font=dict(size=14)))
+            st.plotly_chart(fig2, use_container_width=True)
+            who = me_name if peak < 0 else them_name if peak > 0 else "neither (synchronous)"
+            st.caption(f"Correlation peaks at lag **{peak}** (orange) → **{who} tends to lead** the overall "
+                       "mood: their sentiment in one period predicts the other's in the next.")
+
+# ---- Trust signals ----
+elif section == SPECIAL[3]:
+    st.warning(
+        "**How to read this — please.** Text can show conversational *patterns related to* "
+        "trust (promises, accusations, accountability, follow-through language). It **cannot** "
+        "measure whether someone is actually trustworthy, and it **cannot** tell you whether "
+        f"{them_name}'s feelings are right or wrong — feelings aren't validated or refuted by "
+        "message stats. Use this to **reflect and find things worth talking about**, not as a "
+        "verdict. Trust is rebuilt through real-world follow-through and honest conversation "
+        "(often with a therapist), not a dashboard."
+    )
+    t = get_trust(contact, freq, months, rebuild)
+    tsum = trust.summary(sub)
+    me_t, them_t = t["me"], t["them"]
+
+    def _trate(gdf, col):
+        if gdf.empty:
+            return pd.Series(dtype=float)
+        w = max(3, len(gdf) // 6)
+        return 100 * gdf[col].rolling(w, min_periods=1).sum() / gdf["volume"].rolling(w, min_periods=1).sum()
+
+    # Headline cards most relevant to "she doesn't trust me".
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"{them_name}: distrust voiced", f"{tsum.get('distrust_them', 0):.1f}", "per 100 msgs", delta_color="off")
+    m2.metric(f"{me_name}: commitments made", f"{tsum.get('commitments_me', 0):.1f}", "per 100 msgs", delta_color="off")
+    m3.metric(f"{me_name}: accountability", f"{tsum.get('accountability_me', 0):.1f}", "per 100 msgs", delta_color="off")
+    m4.metric(f"{them_name}: trust affirmed", f"{tsum.get('affirmation_them', 0):.1f}", "per 100 msgs", delta_color="off")
+
+    st.markdown("#### Trust-related language over time (rate per 100 messages)")
+    tcols = st.columns(2)
+    for i, cat in enumerate(trust.CATEGORIES):
+        rm, rt = _trate(me_t, cat), _trate(them_t, cat)
+        fig = go.Figure()
+        if not rm.empty:
+            fig.add_trace(go.Scatter(x=rm.index, y=rm.values, mode="lines",
+                                     line=dict(width=2.5, color=COLOR_ME), name=me_name))
+        if not rt.empty:
+            fig.add_trace(go.Scatter(x=rt.index, y=rt.values, mode="lines",
+                                     line=dict(width=2.5, color=COLOR_THEM), name=them_name))
+        _chart(fig, trust.LABELS[cat], legend=True)
+        fig.update_layout(yaxis_title="per 100 msgs")
+        with tcols[i % 2]:
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Measured interpretation — patterns, not a verdict.
+    d_them = tsum.get("distrust_them", 0)
+    commit_me, acct_me = tsum.get("commitments_me", 0), tsum.get("accountability_me", 0)
+    notes = []
+    if d_them > 0:
+        notes.append(f"- **{them_name} voices distrust ~{d_them:.1f}×/100 msgs** — read the actual "
+                     "messages below to see *what* the concern is about (broken plans? a recurring issue?).")
+    if commit_me > 0:
+        notes.append(f"- **{me_name} makes commitments ~{commit_me:.1f}×/100 msgs.** Text can't verify "
+                     "follow-through, but the inspector lets you trace a promise to what happened next.")
+    notes.append(f"- **{me_name}'s accountability/repair: ~{acct_me:.1f}×/100.** Owning mistakes is one of "
+                 "the strongest trust-repair behaviors (Gottman) — worth noticing if it rises after conflict.")
+    st.markdown("#### What the patterns suggest")
+    st.markdown("\n".join(notes))
+
+    # Inspect — read the actual trust-relevant messages.
+    st.markdown("#### 🔍 Read the actual messages")
+    fl = trust.flagged_messages(sub)
+    fl["who"] = fl["is_from_me"].map({True: me_name, False: them_name})
+    pick = st.multiselect("Categories", trust.CATEGORIES, default=["distrust", "commitments"])
+    show = fl[fl["category"].isin(pick)][["dt", "who", "category", "text"]].rename(columns={"dt": "when"})
+    st.caption(f"{len(show)} messages. Reading these in context is far more honest than any single number.")
+    st.dataframe(show.sort_values("when"), use_container_width=True, height=360, hide_index=True)
