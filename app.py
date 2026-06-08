@@ -476,8 +476,9 @@ def _messages_in_period(x, freq):
     return best.reset_index() if best is not None else pd.DataFrame()
 
 
-def _show_inspector(event, freq, flag=None):
-    """If a point was clicked, show the underlying messages for that period."""
+def _show_inspector(event, freq, key=None, flag=None):
+    """If a point was clicked, show the messages in that exact bin — sorted so the
+    ones that DROVE the clicked metric are at the top."""
     xs = _selected_x(event)
     if not xs:
         return
@@ -490,10 +491,34 @@ def _show_inspector(event, freq, flag=None):
         e = _gm.enrich_gottman(gdf)
         e = e[e[flag] > 0]
     e = e.assign(who=e["is_from_me"].map({True: me_name, False: them_name}))
-    view = e[["dt", "who", "text", "compound"]].rename(
-        columns={"dt": "when", "compound": "sentiment"})
-    with st.expander(f"🔍 {len(view)} messages around {pd.Timestamp(xs[0]):%b %d, %Y}", expanded=True):
-        st.dataframe(view, use_container_width=True, height=320, hide_index=True)
+    e["sentiment"] = e["compound"].round(2)
+    # Sort by what drove the clicked signal.
+    if key == "pct_negative":
+        e = e.sort_values("compound")                     # most negative first
+        drv = "most-negative messages first"
+    elif key == "pct_positive":
+        e = e.sort_values("compound", ascending=False)    # most positive first
+        drv = "most-positive messages first"
+    elif key in ("emoji_rate",):
+        e = e.sort_values("n_emoji", ascending=False)
+        drv = "most emoji first"
+    elif key in ("avg_words", "volume"):
+        e = e.sort_values("n_words", ascending=False)
+        drv = "longest messages first"
+    else:
+        e = e.reindex(e["compound"].abs().sort_values(ascending=False).index)
+        drv = "biggest sentiment drivers first"
+    view = e[["dt", "who", "text", "sentiment"]].rename(columns={"dt": "when"})
+    span_a, span_b = gdf["dt"].min(), gdf["dt"].max()
+    label = (f"{span_a:%b %d}–{span_b:%b %d, %Y}" if span_a.date() != span_b.date()
+             else f"{span_a:%b %d, %Y}")
+    with st.expander(
+        f"🔍 {len(view)} messages in this point ({label}) — {drv}",
+        expanded=True,
+    ):
+        st.caption("This dot is the **average** over these messages; the top rows moved it most. "
+                   "Switch granularity to **Daily** in the sidebar for tighter, near-single-message points.")
+        st.dataframe(view, use_container_width=True, height=340, hide_index=True)
 
 
 def _person_series(fig, me_s, them_s, combined_s=None, scatter=True):
@@ -541,7 +566,7 @@ def render_grid(keys: list[str]) -> None:
             ev = st.plotly_chart(fig, use_container_width=True,
                                  on_select="rerun", key=f"grid_{key}")
             st.caption(desc + "  ·  *click a dot to read those messages*")
-            _show_inspector(ev, freq)
+            _show_inspector(ev, freq, key=key)
         drawn += 1
 
 
