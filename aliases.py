@@ -90,6 +90,11 @@ def children() -> list:
     return [c for c in load().get("_children", [])]
 
 
+def main_people() -> list:
+    """Canonical names of the user's core/family people (for the overview filter)."""
+    return [c for c in load().get("_main", [])]
+
+
 def me_name() -> str:
     """The user's display name (config), or a generic default."""
     return load().get("_me", "Me")

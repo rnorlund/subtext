@@ -52,6 +52,13 @@ def _children_list():
     return aliases.children()
 
 
+def _main_list():
+    if DEMO:
+        import demo_data
+        return ["Alex (partner)", "Mom", "Kid A"]
+    return aliases.main_people()
+
+
 def _my_name():
     if DEMO:
         import demo_data
@@ -254,6 +261,15 @@ if mode == "All relationships":
 
     ov = ov.copy()
     ov.index = [disp_name(c) for c in ov.index]
+
+    # Optional: restrict to your core/family people so acquaintances don't crowd the charts.
+    _main = _main_list()
+    if _main:
+        only_main = st.checkbox("⭐ Main people only (your family/core)", value=True)
+        if only_main:
+            present = [m for m in _main if m in ov.index]
+            if present:
+                ov = ov.loc[present]
     disp = ov[list(overview.DISPLAY_COLS.keys())].rename(columns=overview.DISPLAY_COLS)
     st.dataframe(
         disp.style.format({
@@ -286,7 +302,7 @@ if mode == "All relationships":
     with c2:
         st.markdown("**Most & least positive** (≥50 msgs)")
         ranked = ov.sort_values("net_sentiment")
-        tail = pd.concat([ranked.head(8), ranked.tail(8)])
+        tail = ranked if len(ranked) <= 16 else pd.concat([ranked.head(8), ranked.tail(8)])
         # Force categorical y — otherwise phone-number-like labels become a numeric axis.
         ylabels = [str(c) for c in tail.index]
         bar = go.Figure(go.Bar(
