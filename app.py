@@ -445,6 +445,26 @@ def _add_scatter_with_fit(fig, x_dt, y, name, color, drop=True):
             line=dict(width=2.5, color=color), showlegend=False, hoverinfo="skip"))
 
 
+def _safe_rate(count: pd.Series, vol: pd.Series) -> pd.Series:
+    """Windowed per-100-msg rate that ignores sparse bins and partial windows.
+
+    Drops bins with too few messages (one-message spikes) and requires a FULL
+    rolling window, so the line only appears where there's enough real data —
+    no misleading straight lines across near-empty early/late periods.
+    """
+    if count.empty:
+        return count
+    med = vol[vol > 0].median() if (vol > 0).any() else 0
+    floor = max(3, 0.25 * (med or 0))
+    keep = vol >= floor
+    count, vol = count[keep], vol[keep]
+    if len(count) < 3:
+        return pd.Series(dtype=float)
+    w = max(3, len(count) // 6)
+    rate = 100 * count.rolling(w, min_periods=w).sum() / vol.rolling(w, min_periods=w).sum()
+    return rate.dropna()
+
+
 def _chart(fig, label, height=260, legend=False):
     fig.update_layout(
         title=dict(text=label, font=dict(size=15)),
@@ -734,13 +754,12 @@ elif section == SPECIAL[1]:
     me_g, them_g = g["me"], g["them"]
 
     def _windowed_rate(gdf, cols=None):
-        """Rolling per-100-message rate (volume-normalized) — rises OR falls."""
+        """Rolling per-100-message rate (volume-normalized, sparse bins trimmed)."""
         if gdf.empty:
             return pd.Series(dtype=float)
         cols = cols or gottman.HORSEMEN
-        w = max(3, len(gdf) // 6)
         num = gdf[cols].sum(axis=1) if isinstance(cols, list) else gdf[cols]
-        return 100 * num.rolling(w, min_periods=1).sum() / gdf["volume"].rolling(w, min_periods=1).sum()
+        return _safe_rate(num, gdf["volume"])
 
     # 1) COMBINED conflict trend — the "are we better or worse?" view.
     st.markdown("#### Are conflict signals rising or falling?")
@@ -775,10 +794,7 @@ elif section == SPECIAL[1]:
     def _combined_rate(gdf_a, gdf_b, col):
         cnt = gdf_a[col].add(gdf_b[col], fill_value=0) if col in gdf_a and col in gdf_b else pd.Series(dtype=float)
         vol = gdf_a["volume"].add(gdf_b["volume"], fill_value=0)
-        if cnt.empty:
-            return cnt
-        w = max(3, len(cnt) // 6)
-        return 100 * cnt.rolling(w, min_periods=1).sum() / vol.rolling(w, min_periods=1).sum()
+        return _safe_rate(cnt, vol)
 
     hcols = st.columns(2)
     for i, key in enumerate(gottman.HORSEMEN):
@@ -891,8 +907,7 @@ elif section == SPECIAL[3]:
     def _trate(gdf, col):
         if gdf.empty:
             return pd.Series(dtype=float)
-        w = max(3, len(gdf) // 6)
-        return 100 * gdf[col].rolling(w, min_periods=1).sum() / gdf["volume"].rolling(w, min_periods=1).sum()
+        return _safe_rate(gdf[col], gdf["volume"])
 
     # Headline cards most relevant to "she doesn't trust me".
     m1, m2, m3, m4 = st.columns(4)
@@ -904,10 +919,7 @@ elif section == SPECIAL[3]:
     def _combined_trate(col):
         cnt = me_t[col].add(them_t[col], fill_value=0) if col in me_t and col in them_t else pd.Series(dtype=float)
         vol = me_t["volume"].add(them_t["volume"], fill_value=0)
-        if cnt.empty:
-            return cnt
-        w = max(3, len(cnt) // 6)
-        return 100 * cnt.rolling(w, min_periods=1).sum() / vol.rolling(w, min_periods=1).sum()
+        return _safe_rate(cnt, vol)
 
     st.markdown("#### Trust-related language over time (rate per 100 messages)")
     tcols = st.columns(2)
