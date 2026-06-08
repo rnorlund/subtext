@@ -125,6 +125,16 @@ def main():
     fig.update_layout(title="Conflict signals (Four Horsemen) — rate per 100 messages")
     save(fig, "sample_gottman.png")
 
+    # 4b) Emotional vs. practical share over time.
+    s = sig.compute_signals(df, "W")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=s.index, y=100 * s["emotional_share"], mode="lines",
+                             line=dict(width=2.6, color="#ff6f91"), name="Emotional"))
+    fig.add_trace(go.Scatter(x=s.index, y=100 * s["practical_share"], mode="lines",
+                             line=dict(width=2.6, color="#4cc9f0"), name="Practical"))
+    fig.update_layout(title="Emotional vs. practical messages (% of messages)")
+    save(fig, "sample_emo_practical.png")
+
     # 4) Who-leads contagion bars.
     wl = dyn.who_leads(df, "ME")
     fig = go.Figure()
