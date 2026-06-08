@@ -59,10 +59,35 @@ def _my_name():
     return aliases.me_name()
 
 
+def _dense_start(sub: pd.DataFrame):
+    """First date where the conversation becomes sustained/dense.
+
+    Trims leading sparse-then-gappy history (e.g. a handful of 2024 messages
+    before the thread really gets going) so every chart starts where the data
+    is real, not on isolated early points.
+    """
+    if sub.empty:
+        return None
+    vol = sub.set_index("dt").resample("W").size()
+    nz = vol[vol > 0]
+    if len(nz) < 6:
+        return None
+    floor = max(3, 0.25 * nz.median())
+    ok = (vol >= floor).values
+    for i in range(len(ok)):
+        # first week that's dense AND part of a sustained dense run (3 of next 4).
+        if ok[i] and ok[i:i + 4].sum() >= 3:
+            return vol.index[i]
+    return None
+
+
 def _subset(contact: str, months: int, rebuild: bool) -> pd.DataFrame:
-    """1:1 messages for a contact, optionally limited to the last N months."""
+    """1:1 messages for a contact: trimmed to the dense period, then last N months."""
     df = get_data(rebuild)
     sub = df[(df["contact"] == contact) & (~df["is_group"])]
+    ds = _dense_start(sub)              # drop sparse leading history
+    if ds is not None:
+        sub = sub[sub["dt"] >= ds]
     if months and not sub.empty:
         cutoff = sub["dt"].max() - pd.DateOffset(months=months)
         sub = sub[sub["dt"] >= cutoff]
