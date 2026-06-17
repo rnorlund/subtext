@@ -32,6 +32,7 @@ import gottman
 import aliases
 import trust
 import personality
+import wrapped
 
 st.set_page_config(page_title="Message Analytics", layout="wide")
 
@@ -150,6 +151,11 @@ def get_personality_baseline(rebuild: bool) -> dict:
 def get_personality(contact: str, months: int, rebuild: bool) -> dict:
     return personality.analyze(_subset(contact, months, rebuild),
                                baseline=get_personality_baseline(rebuild))
+
+
+@st.cache_data(show_spinner="Building your Wrapped…")
+def get_wrapped(contact: str, months: int, rebuild: bool, me: str, them: str) -> dict:
+    return wrapped.summarize(_subset(contact, months, rebuild), me, them)
 
 
 @st.cache_data
@@ -654,14 +660,15 @@ GROUPS = {
                                  "question_rate", "avg_words", "vulnerability"],
 }
 SPECIAL = ["🧲 Pursue–withdraw (push–pull)", "🔬 Gottman (Four Horsemen)",
-           "🧭 Who leads (causality)", "🤝 Trust signals", "🧠 Personality"]
+           "🧭 Who leads (causality)", "🤝 Trust signals", "🧠 Personality",
+           "✨ Wrapped"]
 
 st.divider()
 st.markdown("**Section**")
 _sections = list(GROUPS.keys()) + SPECIAL
 # Unified emoji-in-button labels (consistent, icon inside the button).
 _labels = ["💚 Emotional", "📊 Activity", "🤝 Connection", "🧲 Pursue–withdraw",
-           "🔬 Gottman", "🧭 Who leads", "🛡️ Trust", "🧠 Personality"]
+           "🔬 Gottman", "🧭 Who leads", "🛡️ Trust", "🧠 Personality", "✨ Wrapped"]
 if st.session_state.get("section") not in _sections:
     st.session_state["section"] = _sections[0]
 _ncol = 4
@@ -1052,3 +1059,32 @@ elif section == SPECIAL[4]:
                "**F/T** feeling/thinking · **P/J** perceiving/judging. Estimated from "
                "word-usage proxies (social/abstract/emotion/planning language), not a "
                "formal questionnaire — use as a complementary indicator.")
+
+# ---- Wrapped (shareable card) ----
+elif section == SPECIAL[5]:
+    w = get_wrapped(contact, months, rebuild, me_name, them_name)
+    if not w:
+        st.info("Not enough data for a Wrapped card.")
+    else:
+        st.subheader(f"✨ {them_name} & {me_name} — Wrapped")
+        c = st.columns(4)
+        c[0].metric("Messages", f"{w['messages']:,}")
+        c[1].metric("Since", w["first"])
+        c[2].metric("Positivity ratio", f"{w['positivity_ratio']:.1f} : 1")
+        c[3].metric("Avg sentiment", f"{w['sentiment']:+.2f}")
+        c = st.columns(4)
+        c[0].metric("Your share", f"{100*w['my_share']:.0f}%")
+        c[1].metric(f"{w['top_emoji']} top emoji", f"{w['emoji_total']:,}")
+        c[2].metric("Affection notes", f"{w['affection']:,}")
+        c[3].metric("Reaches out more", w["pursuer"])
+        st.caption(f"Busiest month: **{w['busiest_month']}** · ~{w['per_day']} messages/day")
+
+        st.divider()
+        try:
+            png = wrapped.card_png(w, me_name, them_name)
+            st.image(png, caption="Your shareable card (no raw messages — just the stats)", width=420)
+            st.download_button("⬇️  Download shareable card (PNG)", png,
+                               file_name=f"wrapped_{them_name}.png", mime="image/png")
+        except Exception as e:
+            st.warning(f"Card image couldn't render ({e}); the stats above are still yours to screenshot.")
+        st.caption("Share the card, not your messages — it contains only these summary numbers.")

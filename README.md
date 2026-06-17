@@ -103,6 +103,22 @@ cp aliases.example.json aliases.json   # aliases.json is git-ignored
 | `overview.py` | Cross-relationship comparison |
 | `app.py` | Streamlit dashboard |
 
+## 🔒 Your data never leaves your Mac
+
+This is the whole point, so here's exactly how it works:
+
+- **Read-only.** It opens a *copy* of `~/Library/Messages/chat.db` in SQLite
+  read-only mode — it never writes to or alters your Messages database.
+- **No network. No cloud. No accounts. No telemetry.** There is no backend.
+  Grep the code — there are zero outbound API calls with your data.
+- **Nothing personal is committed.** Your messages (`messages.parquet`), exports
+  (`*.md`), contact names/numbers (`aliases.json`), and logs are all in
+  `.gitignore`. The repo ships only code + synthetic samples.
+- **Runs locally** in your browser at `localhost:8501`. Close the tab, it's gone.
+
+If you don't trust it, that's correct instinct for data this sensitive — so read
+the source (it's small) before running it. That's why it's open.
+
 ## 🔐 Notes on data & completeness
 
 The macOS `chat.db` reflects what's synced to *this* Mac. `extract.py` prints a
