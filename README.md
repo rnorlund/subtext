@@ -1,8 +1,8 @@
 <div align="center">
 
-# 💬 subtext
+# 💬 iMessage Relationship Analytics
 
-### Your texts — and the *subtext* beneath them.
+### *Your texts — and the subtext beneath them.*
 
 **A private, on-device dashboard that turns your iMessage history into a
 relationship-science readout: sentiment, conflict patterns, pursue–withdraw
