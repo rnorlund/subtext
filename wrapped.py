@@ -31,10 +31,13 @@ def summarize(sub: pd.DataFrame, me: str, them: str) -> dict:
     by_month = e.set_index("dt").resample("ME").size()
     busiest = by_month.idxmax()
     # Top emoji across the thread.
+    # Skip non-display codepoints: variation selectors, ZWJ, skin-tone modifiers.
+    _skip = set(range(0xFE00, 0xFE10)) | {0x200D} | set(range(0x1F3FB, 0x1F400))
     emojis = collections.Counter()
     for t in e["text"].dropna():
         for ch in _EMOJI_RE.findall(t):
-            emojis[ch] += 1
+            if ord(ch) not in _skip:
+                emojis[ch] += 1
     top_emoji = emojis.most_common(1)[0][0] if emojis else "💬"
     # Who pursues (composite balance, >0.5 = me).
     pb = dyn.compute_pursuit(sub, freq="ME")
