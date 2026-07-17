@@ -671,6 +671,13 @@ _labels = ["💚 Emotional", "📊 Activity", "🤝 Connection", "🧲 Pursue–
            "🔬 Gottman", "🧭 Who leads", "🛡️ Trust", "🧠 Personality", "✨ Wrapped"]
 if st.session_state.get("section") not in _sections:
     st.session_state["section"] = _sections[0]
+
+
+def _pick_section(name):
+    # Runs BEFORE the rerun, so the button highlight is correct on the first click.
+    st.session_state["section"] = name
+
+
 _ncol = 4
 for _row in range(0, len(_sections), _ncol):
     _cols = st.columns(_ncol, gap="small")
@@ -680,9 +687,9 @@ for _row in range(0, len(_sections), _ncol):
             break
         with _cols[_j]:
             _active = st.session_state["section"] == _sections[_i]
-            if st.button(_labels[_i], key=f"secbtn_{_i}", use_container_width=True,
-                         type="primary" if _active else "secondary"):
-                st.session_state["section"] = _sections[_i]
+            st.button(_labels[_i], key=f"secbtn_{_i}", use_container_width=True,
+                      type="primary" if _active else "secondary",
+                      on_click=_pick_section, args=(_sections[_i],))
 section = st.session_state["section"]
 
 # Per-person view mode (applies to all per-person charts).
